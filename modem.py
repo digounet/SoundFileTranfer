@@ -10,12 +10,15 @@ Os tons são múltiplos de 100 Hz, então ficam ortogonais na janela de 10 ms (s
 Dados do pacote (91 bytes):
     cabeçalho (sessão, seq, total, tamanho) 7 B + payload 64 B + CRC32 4 B + Reed-Solomon 16 B
 O Reed-Solomon corrige até 8 bytes errados por pacote; o CRC descarta o que sobrar.
+
+Recepção: o áudio passa por um passa-banda na faixa útil antes de tudo. Isso tira ruído e
+cliques fora da banda e é o que permite um limiar de chirp baixo sem falsos positivos.
 """
 import struct
 import zlib
 
 import numpy as np
-from scipy.signal import chirp, fftconvolve
+from scipy.signal import chirp, fftconvolve, firwin, lfilter
 from reedsolo import RSCodec, ReedSolomonError
 
 SR_PADRAO = 48000
@@ -28,10 +31,14 @@ GUARDA = 0.002              # s, descartado na recepção (eco/reverberação)
 SIMBOLO = JANELA + GUARDA
 
 PREAMBULO = 0.100
+CHIRP_F0, CHIRP_F1 = 800.0, 3500.0
 SILENCIO_POS_PREAMBULO = 0.020
 SILENCIO_ENTRE_PACOTES = 0.040
 AMPLITUDE = 0.5
-LIMIAR_SYNC = 0.40          # correlação normalizada mínima para aceitar o chirp
+# Correlação normalizada mínima para aceitar o chirp. Com o passa-banda na recepção, ruído
+# puro fica abaixo de ~0.15; e um falso positivo custa só uma tentativa de decodificação,
+# porque o sincronizador volta para logo depois do chirp quando o pacote não abre.
+LIMIAR_SYNC = 0.25
 
 PAYLOAD = 64
 CABECALHO = struct.Struct(">HHHB")   # sessão, seq, total, tamanho útil
@@ -51,10 +58,15 @@ def frequencias():
     return F_BASE + F_PASSO * np.arange(N_TONS)
 
 
+def banda_util():
+    """Faixa que o receptor deixa passar: cobre o chirp e os tons, com folga para o filtro."""
+    return (min(CHIRP_F0, F_BASE) - 200.0, max(CHIRP_F1, frequencias()[-1]) + 400.0)
+
+
 def preambulo(sr):
     n = amostras(PREAMBULO, sr)
     t = np.arange(n) / sr
-    sinal = chirp(t, f0=800, f1=3500, t1=PREAMBULO, method="linear")
+    sinal = chirp(t, f0=CHIRP_F0, f1=CHIRP_F1, t1=PREAMBULO, method="linear")
     return (AMPLITUDE * sinal * np.hanning(n)).astype(np.float32)
 
 
@@ -118,7 +130,12 @@ def demodular(trecho, sr):
 # ---------------------------------------------------------------- sincronismo
 
 class Sincronizador:
-    """Recebe áudio em blocos, acha o chirp e entrega os bytes brutos de cada pacote."""
+    """Recebe áudio em blocos, acha o chirp e entrega os bytes brutos de cada pacote.
+
+    `ao_pacote(bruto)` deve devolver True se o pacote decodificou. Quando não decodifica, a
+    busca recomeça logo depois do chirp em vez de pular o pacote inteiro: um falso positivo
+    do chirp não engole um pacote de verdade que esteja logo adiante.
+    """
 
     def __init__(self, sr, ao_pacote):
         self.sr = sr
@@ -129,10 +146,15 @@ class Sincronizador:
         self.n_gap = amostras(SILENCIO_POS_PREAMBULO, sr)
         self.n_dados = SIMBOLOS_PACOTE * amostras(SIMBOLO, sr)
         self.busca = amostras(0.5, sr)
+        # FIR de fase linear: atrasa chirp e dados igualmente, então os índices continuam
+        # alinhados. ~400 taps em 48 kHz dão transição de uns 400 Hz.
+        self.fir = firwin(int(sr / 120) | 1, banda_util(), pass_zero=False, fs=sr)
+        self.zi = np.zeros(len(self.fir) - 1)
         self.buf = np.zeros(0, dtype=np.float32)
 
     def alimentar(self, x):
-        self.buf = np.concatenate([self.buf, np.asarray(x, dtype=np.float32)])
+        x, self.zi = lfilter(self.fir, [1.0], np.asarray(x, dtype=np.float64), zi=self.zi)
+        self.buf = np.concatenate([self.buf, x.astype(np.float32)])
         while len(self.buf) >= self.busca + self.L:
             regiao = self.buf[: self.busca + self.L].astype(np.float64)
             corr = np.abs(fftconvolve(regiao, self.pre[::-1], mode="valid"))
@@ -150,5 +172,7 @@ class Sincronizador:
             fim = inicio + self.n_dados
             if len(self.buf) < fim:
                 return                                   # espera o resto do pacote
-            self.ao_pacote(demodular(self.buf[inicio:fim], self.sr))
-            self.buf = self.buf[fim:]
+            if self.ao_pacote(demodular(self.buf[inicio:fim], self.sr)):
+                self.buf = self.buf[fim:]
+            else:
+                self.buf = self.buf[i + self.L:]         # chirp falso ou pacote perdido

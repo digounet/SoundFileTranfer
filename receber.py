@@ -26,13 +26,14 @@ class Montador:
         self.concluido = False
 
     def ao_pacote(self, bruto):
+        """Devolve True se o pacote decodificou; o sincronizador usa isso para saber onde seguir."""
         if self.concluido:
-            return
+            return True
         r = modem.abrir_pacote(bruto)
         if r is None:
             self.ruins += 1
             self._status()
-            return
+            return False
         sessao, seq, total, dados = r
         if sessao != self.sessao:                    # nova transmissão: recomeça
             self.sessao, self.total, self.partes = sessao, total, {}
@@ -40,6 +41,7 @@ class Montador:
         self._status()
         if len(self.partes) == self.total:
             self._finalizar()
+        return True
 
     def _status(self):
         if self.total:

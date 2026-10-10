@@ -3,6 +3,10 @@ Receptor: escuta o microfone (ou lê um WAV), remonta os pacotes e extrai a past
 
     python receber.py ./recebidos
     python receber.py ./recebidos --wav transmissao.wav
+
+Se a transmissão terminar incompleta, imprime quais pacotes faltam no formato que
+`enviar.py --pacotes` aceita. O emissor pode ser rodado de novo com a mesma pasta: a sessão
+é a mesma e o receptor só completa o que falta.
 """
 import argparse
 import io
@@ -23,6 +27,7 @@ class Montador:
         self.partes = {}
         self.total = None
         self.ruins = 0
+        self.ultimo_seq = -1
         self.concluido = False
 
     def ao_pacote(self, bruto):
@@ -35,13 +40,30 @@ class Montador:
             self._status()
             return False
         sessao, seq, total, dados = r
-        if sessao != self.sessao:                    # nova transmissão: recomeça
+        if sessao != self.sessao:                    # outra transmissão: recomeça
             self.sessao, self.total, self.partes = sessao, total, {}
+            self.ultimo_seq = -1
+            print(f"\nsessão {sessao:04x}, {total} pacotes")
+        elif seq <= self.ultimo_seq and len(self.partes) < self.total:
+            print(f"\nvolta terminou; faltam: {self.faltando()}")   # emissor voltou ao início
+        self.ultimo_seq = seq
         self.partes[seq] = dados
         self._status()
         if len(self.partes) == self.total:
             self._finalizar()
         return True
+
+    def faltando(self):
+        """Pacotes ausentes no formato que enviar.py --pacotes aceita: '3,7-9'."""
+        grupos = []
+        for seq in range(self.total or 0):
+            if seq in self.partes:
+                continue
+            if grupos and seq == grupos[-1][1] + 1:
+                grupos[-1][1] = seq
+            else:
+                grupos.append([seq, seq])
+        return ",".join(f"{a}" if a == b else f"{a}-{b}" for a, b in grupos)
 
     def _status(self):
         if self.total:
@@ -61,6 +83,15 @@ class Montador:
         for n in nomes:
             print("  ", n)
         self.concluido = True
+
+    def despedida(self):
+        if self.concluido:
+            return
+        if not self.total:
+            print("\nNenhum pacote reconhecido.")
+            return
+        print(f"\nIncompleto: faltam {self.total - len(self.partes)} de {self.total} pacotes.")
+        print(f"Para completar, rode no emissor:  python enviar.py <pasta> --pacotes {self.faltando()}")
 
 
 def ler_wav(caminho):
@@ -90,8 +121,7 @@ def main():
             if montador.concluido:
                 break
         sync.alimentar(np.zeros(sr, dtype=np.float32))   # empurra o final
-        if not montador.concluido:
-            print(f"\nIncompleto: faltam {(montador.total or 0) - len(montador.partes)} pacotes.")
+        montador.despedida()
         return
 
     import sounddevice as sd
@@ -109,6 +139,7 @@ def main():
                 sync.alimentar(fila.get())
         except KeyboardInterrupt:
             print("\nInterrompido.")
+            montador.despedida()
 
 
 if __name__ == "__main__":

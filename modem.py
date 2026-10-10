@@ -2,16 +2,18 @@
 Modem acústico MFSK compartilhado entre emissor (enviar.py) e receptor (receber.py).
 
 Formato de cada pacote no ar:
-    [chirp de sincronismo 100 ms][silêncio 20 ms][91 símbolos MFSK][silêncio 40 ms]
+    [chirp de sincronismo 100 ms][silêncio 20 ms][251 símbolos MFSK][silêncio 40 ms]
 
 Cada símbolo dura 12 ms (2 ms de guarda contra eco + 10 ms de análise) e carrega 2 bancos de
 16 tons tocando ao mesmo tempo: cada banco escolhe 1 de 16 tons (4 bits), logo 8 bits por
 símbolo. Os tons são múltiplos de 100 Hz (1000 a 4100 Hz), ortogonais na janela de 10 ms.
 A potência total é a mesma de um tom só; cada banco fica 3 dB abaixo.
 
-Dados do pacote (91 bytes):
-    cabeçalho (sessão, seq, total, tamanho) 7 B + payload 64 B + CRC32 4 B + Reed-Solomon 16 B
-O Reed-Solomon corrige até 8 bytes errados por pacote; o CRC descarta o que sobrar.
+Dados do pacote (251 bytes):
+    cabeçalho (sessão, seq, total, tamanho) 7 B + payload 192 B + CRC32 4 B + Reed-Solomon 48 B
+O Reed-Solomon corrige até 24 bytes errados por pacote; o CRC descarta o que sobrar.
+Pacote maior amortiza chirp, silêncios, cabeçalho e CRC; a fração corrigível (19 %) é a mesma
+de antes, e um código mais longo tolera melhor rajadas curtas.
 
 Recepção: o áudio passa por um passa-banda na faixa útil antes de tudo. Isso tira ruído e
 cliques fora da banda e é o que permite um limiar de chirp baixo sem falsos positivos.
@@ -43,9 +45,9 @@ AMPLITUDE = 0.5
 # porque o sincronizador volta para logo depois do chirp quando o pacote não abre.
 LIMIAR_SYNC = 0.25
 
-PAYLOAD = 64
+PAYLOAD = 192               # cabe no campo de 1 byte do cabeçalho e no bloco de 255 do RS
 CABECALHO = struct.Struct(">HHHB")   # sessão, seq, total, tamanho útil
-NSYM_RS = 16
+NSYM_RS = 48
 _rs = RSCodec(NSYM_RS)
 
 BYTES_PACOTE = CABECALHO.size + PAYLOAD + 4 + NSYM_RS

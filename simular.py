@@ -88,7 +88,7 @@ CENARIOS = [
 
 
 def main():
-    pacotes, audio = transmitir(6000)
+    pacotes, audio = transmitir(12000)
     seg = len(modem.modular(pacotes[0], SR)) / SR
     print(f"{len(pacotes)} pacotes de {modem.PAYLOAD} B ({modem.BYTES_PACOTE} B no ar, "
           f"{seg:.2f} s cada): {modem.PAYLOAD / seg:.1f} B/s")

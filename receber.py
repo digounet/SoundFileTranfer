@@ -35,6 +35,7 @@ class Montador:
         self.ultimo_seq = -1
         self.concluido = False
         self.ultimo_pacote_em = None
+        self.acumulador = modem.Acumulador()
         self.arquivo_parcial = os.path.join(destino, ".parcial.json")
         self._carregar()
 
@@ -58,11 +59,13 @@ class Montador:
                        "partes": {str(k): base64.b64encode(v).decode() for k, v in self.partes.items()}}, f)
         os.replace(tmp, self.arquivo_parcial)        # troca atômica: Ctrl+C no meio não corrompe
 
-    def ao_pacote(self, bruto):
+    def ao_pacote(self, bruto, mag):
         """Devolve True se o pacote decodificou; o sincronizador usa isso para saber onde seguir."""
         if self.concluido:
             return True
         r = modem.abrir_pacote(bruto)
+        if r is None:
+            r = self.acumulador.tentar(bruto, mag)       # soma com cópias ruins anteriores
         if r is None:
             self.ruins += 1
             self._status()

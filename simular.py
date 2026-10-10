@@ -74,9 +74,12 @@ def canal_real(audio, cauda_db, semente, snr_banda=25.0):
 
 def receber(audio):
     ok, falhas = set(), [0]
+    acumulador = modem.Acumulador()
 
-    def ao_pacote(bruto):
+    def ao_pacote(bruto, mag):
         r = modem.abrir_pacote(bruto)
+        if r is None:
+            r = acumulador.tentar(bruto, mag)
         if r is None:
             falhas[0] += 1
             return False
@@ -104,6 +107,9 @@ CENARIOS = [
     ("canal real 30 cm",    lambda a: canal_real(a, 0, 22),                   True),
     ("canal real +3 dB rev", lambda a: canal_real(a, 3, 23),                  False),
     ("canal real +6 dB rev", lambda a: canal_real(a, 6, 24),                  False),
+    # Informativo. Aqui o eco e identico em toda volta, entao os mesmos pacotes falham de novo
+    # e a soma de copias nao ajuda; na gravacao real os erros variaram entre copias e ajudou.
+    ("canal +6 dB, 2 voltas", lambda a: np.concatenate([canal_real(a, 6, 25), canal_real(a, 6, 26)]), False),
 ]
 
 

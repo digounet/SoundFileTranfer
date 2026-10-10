@@ -133,17 +133,23 @@ def modular(bruto, sr):
     ]).astype(np.float32)
 
 
-def demodular(trecho, sr):
-    """Áudio já alinhado no início dos símbolos -> bytes do pacote."""
+def magnitudes(trecho, sr):
+    """Áudio já alinhado no início dos símbolos -> magnitude de cada tom: (símbolos, bancos, tons)."""
     n_sim = amostras(SIMBOLO, sr)
     n_jan = amostras(JANELA, sr)
     blocos = trecho[: SLOTS_PACOTE * n_sim].reshape(SLOTS_PACOTE, n_sim)[:, n_sim - n_jan:]
     espectro = np.abs(np.fft.rfft(blocos, axis=1))
     bins = np.round(frequencias() / (sr / n_jan)).astype(int)
-    mag = espectro[:, bins].reshape(SLOTS_PACOTE, N_BANCOS, N_TONS)
-    # Em sala reverberante o tom do símbolo anterior ainda soa dentro da janela deste e vence
-    # tons fracos. Antes de decidir, desconta-se do bin do tom anterior uma fração do que ele
-    # mediu no símbolo passado. Quando o tom se repete, o bin continua sendo o maior.
+    return espectro[:, bins].reshape(SLOTS_PACOTE, N_BANCOS, N_TONS)
+
+
+def decidir(mag):
+    """Magnitudes -> bytes do pacote.
+
+    Em sala reverberante o tom do símbolo anterior ainda soa dentro da janela deste e vence
+    tons fracos. Antes de decidir, desconta-se do bin do tom anterior uma fração do que ele
+    mediu no símbolo passado. Quando o tom se repete, o bin continua sendo o maior.
+    """
     decisao = np.zeros((SLOTS_PACOTE, N_BANCOS), dtype=np.int64)
     bancos = np.arange(N_BANCOS)
     for s in range(SLOTS_PACOTE):
@@ -155,12 +161,47 @@ def demodular(trecho, sr):
     return bytes(((nibbles[0::2] << 4) | nibbles[1::2]).astype(np.uint8))
 
 
+def demodular(trecho, sr):
+    return decidir(magnitudes(trecho, sr))
+
+
+class Acumulador:
+    """Junta cópias corrompidas do mesmo pacote até a soma delas decodificar.
+
+    Os erros de uma cópia para outra caem em posições diferentes (ruído, eco que varia), então
+    somar as magnitudes antes de decidir derruba a taxa de erro. Duas cópias são do mesmo
+    pacote se concordam em pelo menos 10 % dos bytes: dois pacotes diferentes concordam em
+    ~0,4 % ao acaso, e cópias de um canal ruim concordam em dezenas de por cento.
+    """
+    CONCORDANCIA_MIN = 0.10
+    MAX_GRUPOS = 32
+
+    def __init__(self):
+        self.grupos = []                    # cada um: [soma de magnitudes, bytes decididos]
+
+    def tentar(self, bruto, mag):
+        """Devolve o pacote aberto (como abrir_pacote) se a soma decodificou, senão None."""
+        mag = mag / max(float(mag.max(axis=2).mean()), 1e-12)     # cópia mais alta não domina
+        novo = np.frombuffer(bruto, dtype=np.uint8)
+        for g in self.grupos:
+            if np.mean(np.frombuffer(g[1], dtype=np.uint8) == novo) >= self.CONCORDANCIA_MIN:
+                g[0] = g[0] + mag
+                g[1] = decidir(g[0])
+                r = abrir_pacote(g[1])
+                if r:
+                    self.grupos = [h for h in self.grupos if h is not g]
+                return r
+        self.grupos.append([mag, bruto])
+        del self.grupos[:-self.MAX_GRUPOS]
+        return None
+
+
 # ---------------------------------------------------------------- sincronismo
 
 class Sincronizador:
     """Recebe áudio em blocos, acha o chirp e entrega os bytes brutos de cada pacote.
 
-    `ao_pacote(bruto)` deve devolver True se o pacote decodificou. Quando não decodifica, a
+    `ao_pacote(bruto, mag)` deve devolver True se o pacote decodificou. Quando não decodifica, a
     busca recomeça logo depois do chirp em vez de pular o pacote inteiro: um falso positivo
     do chirp não engole um pacote de verdade que esteja logo adiante.
     """
@@ -200,7 +241,8 @@ class Sincronizador:
             fim = inicio + self.n_dados
             if len(self.buf) < fim:
                 return                                   # espera o resto do pacote
-            if self.ao_pacote(demodular(self.buf[inicio:fim], self.sr)):
+            mag = magnitudes(self.buf[inicio:fim], self.sr)
+            if self.ao_pacote(decidir(mag), mag):
                 self.buf = self.buf[fim:]
             else:
                 self.buf = self.buf[i + self.L:]         # chirp falso ou pacote perdido

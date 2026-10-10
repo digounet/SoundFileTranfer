@@ -222,3 +222,6 @@ __marimo__/
 # Saidas geradas pelo enviar.py e lixo do macOS
 *.wav
 .DS_Store
+
+# Respostas impulsivas medidas sao dados do projeto, nao saida gerada
+!canais/*.wav

@@ -218,3 +218,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Saidas geradas pelo enviar.py e lixo do macOS
+*.wav
+.DS_Store

@@ -2,10 +2,12 @@
 Modem acústico MFSK compartilhado entre emissor (enviar.py) e receptor (receber.py).
 
 Formato de cada pacote no ar:
-    [chirp de sincronismo 100 ms][silêncio 20 ms][182 símbolos MFSK][silêncio 40 ms]
+    [chirp de sincronismo 100 ms][silêncio 20 ms][91 símbolos MFSK][silêncio 40 ms]
 
-Cada símbolo = 1 de 16 tons (4 bits), 12 ms (2 ms de guarda contra eco + 10 ms de análise).
-Os tons são múltiplos de 100 Hz, então ficam ortogonais na janela de 10 ms (sem vazamento na FFT).
+Cada símbolo dura 12 ms (2 ms de guarda contra eco + 10 ms de análise) e carrega 2 bancos de
+16 tons tocando ao mesmo tempo: cada banco escolhe 1 de 16 tons (4 bits), logo 8 bits por
+símbolo. Os tons são múltiplos de 100 Hz (1000 a 4100 Hz), ortogonais na janela de 10 ms.
+A potência total é a mesma de um tom só; cada banco fica 3 dB abaixo.
 
 Dados do pacote (91 bytes):
     cabeçalho (sessão, seq, total, tamanho) 7 B + payload 64 B + CRC32 4 B + Reed-Solomon 16 B
@@ -23,7 +25,8 @@ from reedsolo import RSCodec, ReedSolomonError
 
 SR_PADRAO = 48000
 
-N_TONS = 16                 # 16 tons -> 4 bits por símbolo
+N_TONS = 16                 # 16 tons -> 4 bits por banco
+N_BANCOS = 2                # bancos tocando em paralelo; cada um leva um nibble por símbolo
 F_BASE = 1000.0             # Hz
 F_PASSO = 100.0             # Hz (= 1 / JANELA -> ortogonalidade)
 JANELA = 0.010              # s, janela de análise
@@ -46,7 +49,8 @@ NSYM_RS = 16
 _rs = RSCodec(NSYM_RS)
 
 BYTES_PACOTE = CABECALHO.size + PAYLOAD + 4 + NSYM_RS
-SIMBOLOS_PACOTE = BYTES_PACOTE * 2
+NIBBLES_PACOTE = BYTES_PACOTE * 2
+SLOTS_PACOTE = -(-NIBBLES_PACOTE // N_BANCOS)     # símbolos no ar por pacote
 MAX_PACOTES = 65535
 
 
@@ -55,7 +59,8 @@ def amostras(segundos, sr):
 
 
 def frequencias():
-    return F_BASE + F_PASSO * np.arange(N_TONS)
+    """Todos os tons, em ordem; o banco k usa os 16 a partir de k * N_TONS."""
+    return F_BASE + F_PASSO * np.arange(N_TONS * N_BANCOS)
 
 
 def banda_util():
@@ -98,13 +103,17 @@ def abrir_pacote(bruto):
 
 def modular(bruto, sr):
     """Bytes do pacote -> áudio float32 (preâmbulo + símbolos + silêncios)."""
-    simbolos = []
-    for b in bruto:
-        simbolos += [b >> 4, b & 0x0F]
+    bytes_ = np.frombuffer(bruto, dtype=np.uint8)
+    nibbles = np.zeros(SLOTS_PACOTE * N_BANCOS, dtype=np.int64)
+    nibbles[0:2 * len(bytes_):2] = bytes_ >> 4
+    nibbles[1:2 * len(bytes_):2] = bytes_ & 0x0F
     n_sim = amostras(SIMBOLO, sr)
-    f_inst = np.repeat(frequencias()[simbolos], n_sim)
-    fase = 2 * np.pi * np.cumsum(f_inst) / sr          # fase contínua: sem estalos
-    dados = AMPLITUDE * np.sin(fase)
+    freqs = frequencias()
+    dados = np.zeros(SLOTS_PACOTE * n_sim)
+    for k in range(N_BANCOS):           # nibble i vai no símbolo i // N_BANCOS, banco i % N_BANCOS
+        f_inst = np.repeat(freqs[N_TONS * k + nibbles[k::N_BANCOS]], n_sim)
+        dados += np.sin(2 * np.pi * np.cumsum(f_inst) / sr)     # fase contínua: sem estalos
+    dados *= AMPLITUDE / np.sqrt(N_BANCOS)                      # potência total de um tom só
     rampa = amostras(0.003, sr)
     dados[:rampa] *= np.linspace(0, 1, rampa)
     dados[-rampa:] *= np.linspace(1, 0, rampa)
@@ -120,11 +129,12 @@ def demodular(trecho, sr):
     """Áudio já alinhado no início dos símbolos -> bytes do pacote."""
     n_sim = amostras(SIMBOLO, sr)
     n_jan = amostras(JANELA, sr)
-    blocos = trecho[: SIMBOLOS_PACOTE * n_sim].reshape(SIMBOLOS_PACOTE, n_sim)[:, n_sim - n_jan:]
+    blocos = trecho[: SLOTS_PACOTE * n_sim].reshape(SLOTS_PACOTE, n_sim)[:, n_sim - n_jan:]
     espectro = np.abs(np.fft.rfft(blocos, axis=1))
     bins = np.round(frequencias() / (sr / n_jan)).astype(int)
-    simbolos = np.argmax(espectro[:, bins], axis=1)
-    return bytes(((simbolos[0::2] << 4) | simbolos[1::2]).astype(np.uint8))
+    mag = espectro[:, bins].reshape(SLOTS_PACOTE, N_BANCOS, N_TONS)
+    nibbles = np.argmax(mag, axis=2).reshape(-1)[:NIBBLES_PACOTE]
+    return bytes(((nibbles[0::2] << 4) | nibbles[1::2]).astype(np.uint8))
 
 
 # ---------------------------------------------------------------- sincronismo
@@ -144,7 +154,7 @@ class Sincronizador:
         self.L = len(self.pre)
         self.norma_pre = float(np.linalg.norm(self.pre))
         self.n_gap = amostras(SILENCIO_POS_PREAMBULO, sr)
-        self.n_dados = SIMBOLOS_PACOTE * amostras(SIMBOLO, sr)
+        self.n_dados = SLOTS_PACOTE * amostras(SIMBOLO, sr)
         self.busca = amostras(0.5, sr)
         # FIR de fase linear: atrasa chirp e dados igualmente, então os índices continuam
         # alinhados. ~400 taps em 48 kHz dão transição de uns 400 Hz.

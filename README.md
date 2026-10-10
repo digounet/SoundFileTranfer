@@ -28,14 +28,26 @@ Um pacote no ar:
 
 ## Instalar
 
-Precisa de Python 3 e do PortAudio, usado pelo `sounddevice`.
+Precisa de Python 3. As dependências (`numpy`, `scipy`, `reedsolo`, `sounddevice`) vêm como pacote pronto do pip: sem compilador e sem administrador. No Windows e no macOS o `sounddevice` já traz o PortAudio embutido; só no Linux a biblioteca do sistema precisa ser instalada.
+
+macOS e Linux:
 
 ```bash
-brew install portaudio            # macOS. Linux: apt install libportaudio2
+sudo apt install libportaudio2    # só no Linux
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
+
+Windows (PowerShell ou cmd, sem administrador):
+
+```powershell
+py -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+Para só gravar ou ler WAV (`--wav`), o `sounddevice` não é necessário: os dois scripts só o importam na hora de tocar ou escutar.
 
 ## Uso
 

@@ -225,3 +225,6 @@ __marimo__/
 
 # Respostas impulsivas medidas sao dados do projeto, nao saida gerada
 !canais/*.wav
+
+# Pasta de destino do receptor: conteudo de terceiros, nunca versionar
+recebidos/

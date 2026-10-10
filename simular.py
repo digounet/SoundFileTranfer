@@ -1,5 +1,7 @@
 """
-Simula o canal acústico sobre o modem real, sem hardware: ruído branco, cliques e reverberação.
+Simula o canal acústico sobre o modem real, sem hardware: ruído branco, cliques, reverberação
+sintética e a resposta impulsiva medida de um canal real (canais/pc_mac_30cm.wav: notebook
+Windows a 70 % de volume, 30 cm de um MacBook, sala de escritório).
 
     python simular.py
 
@@ -7,7 +9,9 @@ Serve de teste de regressão para mudanças no modem.py: imprime quantos pacotes
 cenário e termina com código 1 se um cenário de referência ficar abaixo de 100 %.
 Sementes fixas, resultado determinístico.
 """
+import os
 import sys
+import wave
 
 import numpy as np
 from scipy.signal import fftconvolve
@@ -55,6 +59,19 @@ def reverb(audio, rt60, drr_db, semente):
     return fftconvolve(audio, ir)[:len(audio)].astype(np.float32)
 
 
+def canal_real(audio, cauda_db, semente, snr_banda=25.0):
+    """Convolui com a resposta impulsiva medida; cauda_db > 0 piora a reverberação alem do medido.
+    O ruido branco e dosado pela SNR dentro da faixa util, como medida na gravacao (25 dB)."""
+    caminho = os.path.join(os.path.dirname(os.path.abspath(__file__)), "canais", "pc_mac_30cm.wav")
+    with wave.open(caminho) as w:
+        h = np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float64)
+    h[int(0.002 * SR):] *= 10 ** (cauda_db / 20)
+    y = fftconvolve(audio.astype(np.float64), h)[:len(audio)]
+    y *= np.sqrt(np.mean(audio[audio != 0] ** 2) / np.mean(y[audio != 0] ** 2))   # mesma potencia
+    snr_larga = snr_banda - 10 * np.log10(SR / 2 / (modem.banda_util()[1] - modem.banda_util()[0]))
+    return ruido(y.astype(np.float32), snr_larga, semente)
+
+
 def receber(audio):
     ok, falhas = set(), [0]
 
@@ -84,6 +101,9 @@ CENARIOS = [
     ("reverb DRR 8 dB",    lambda a: ruido(reverb(a, 0.4, 8, 16), 10, 17),   True),
     ("reverb DRR 5 dB",    lambda a: ruido(reverb(a, 0.4, 5, 18), 10, 19),   True),
     ("reverb DRR 2 dB",    lambda a: ruido(reverb(a, 0.4, 2, 20), 10, 21),   False),
+    ("canal real 30 cm",    lambda a: canal_real(a, 0, 22),                   True),
+    ("canal real +3 dB rev", lambda a: canal_real(a, 3, 23),                  False),
+    ("canal real +6 dB rev", lambda a: canal_real(a, 6, 24),                  False),
 ]
 
 

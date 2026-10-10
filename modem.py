@@ -4,16 +4,19 @@ Modem acústico MFSK compartilhado entre emissor (enviar.py) e receptor (receber
 Formato de cada pacote no ar:
     [chirp de sincronismo 100 ms][silêncio 20 ms][251 símbolos MFSK][silêncio 40 ms]
 
-Cada símbolo dura 12 ms (2 ms de guarda contra eco + 10 ms de análise) e carrega 2 bancos de
+Cada símbolo dura 16 ms (6 ms de guarda contra eco + 10 ms de análise) e carrega 2 bancos de
 16 tons tocando ao mesmo tempo: cada banco escolhe 1 de 16 tons (4 bits), logo 8 bits por
 símbolo. Os tons são múltiplos de 100 Hz (1000 a 4100 Hz), ortogonais na janela de 10 ms.
 A potência total é a mesma de um tom só; cada banco fica 3 dB abaixo.
 
 Dados do pacote (251 bytes):
-    cabeçalho (sessão, seq, total, tamanho) 7 B + payload 192 B + CRC32 4 B + Reed-Solomon 48 B
-O Reed-Solomon corrige até 24 bytes errados por pacote; o CRC descarta o que sobrar.
-Pacote maior amortiza chirp, silêncios, cabeçalho e CRC; a fração corrigível (19 %) é a mesma
-de antes, e um código mais longo tolera melhor rajadas curtas.
+    cabeçalho (sessão, seq, total, tamanho) 7 B + payload 160 B + CRC32 4 B + Reed-Solomon 80 B
+O Reed-Solomon corrige até 40 bytes errados por pacote (16 %); o CRC descarta o que sobrar.
+Pacote longo amortiza chirp, silêncios, cabeçalho e CRC e tolera melhor rajadas curtas.
+
+Guarda, Reed-Solomon e o desconto do rastro (ISI_RHO) foram dimensionados pela resposta
+impulsiva medida entre um notebook e um Mac a 30 cm (canais/pc_mac_30cm.wav): a energia
+refletida superava a direta e o tom anterior ainda tinha 60 % da amplitude na janela seguinte.
 
 Recepção: o áudio passa por um passa-banda na faixa útil antes de tudo. Isso tira ruído e
 cliques fora da banda e é o que permite um limiar de chirp baixo sem falsos positivos.
@@ -32,7 +35,7 @@ N_BANCOS = 2                # bancos tocando em paralelo; cada um leva um nibble
 F_BASE = 1000.0             # Hz
 F_PASSO = 100.0             # Hz (= 1 / JANELA -> ortogonalidade)
 JANELA = 0.010              # s, janela de análise
-GUARDA = 0.002              # s, descartado na recepção (eco/reverberação)
+GUARDA = 0.006              # s, descartado na recepção (eco/reverberação); ver docstring
 SIMBOLO = JANELA + GUARDA
 
 PREAMBULO = 0.100
@@ -44,10 +47,13 @@ AMPLITUDE = 0.5
 # puro fica abaixo de ~0.15; e um falso positivo custa só uma tentativa de decodificação,
 # porque o sincronizador volta para logo depois do chirp quando o pacote não abre.
 LIMIAR_SYNC = 0.25
+# Fração da magnitude do tom anterior descontada do bin dele no símbolo seguinte. Medido:
+# com 6 ms de guarda o rastro fica em ~25 %. Em canal limpo o desconto é inócuo.
+ISI_RHO = 0.25
 
-PAYLOAD = 192               # cabe no campo de 1 byte do cabeçalho e no bloco de 255 do RS
+PAYLOAD = 160               # cabe no campo de 1 byte do cabeçalho e no bloco de 255 do RS
 CABECALHO = struct.Struct(">HHHB")   # sessão, seq, total, tamanho útil
-NSYM_RS = 48
+NSYM_RS = 80
 _rs = RSCodec(NSYM_RS)
 
 BYTES_PACOTE = CABECALHO.size + PAYLOAD + 4 + NSYM_RS
@@ -135,7 +141,17 @@ def demodular(trecho, sr):
     espectro = np.abs(np.fft.rfft(blocos, axis=1))
     bins = np.round(frequencias() / (sr / n_jan)).astype(int)
     mag = espectro[:, bins].reshape(SLOTS_PACOTE, N_BANCOS, N_TONS)
-    nibbles = np.argmax(mag, axis=2).reshape(-1)[:NIBBLES_PACOTE]
+    # Em sala reverberante o tom do símbolo anterior ainda soa dentro da janela deste e vence
+    # tons fracos. Antes de decidir, desconta-se do bin do tom anterior uma fração do que ele
+    # mediu no símbolo passado. Quando o tom se repete, o bin continua sendo o maior.
+    decisao = np.zeros((SLOTS_PACOTE, N_BANCOS), dtype=np.int64)
+    bancos = np.arange(N_BANCOS)
+    for s in range(SLOTS_PACOTE):
+        linha = mag[s].copy()
+        if s > 0:
+            linha[bancos, decisao[s - 1]] -= ISI_RHO * mag[s - 1, bancos, decisao[s - 1]]
+        decisao[s] = np.argmax(linha, axis=1)
+    nibbles = decisao.reshape(-1)[:NIBBLES_PACOTE]
     return bytes(((nibbles[0::2] << 4) | nibbles[1::2]).astype(np.uint8))
 
 

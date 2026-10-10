@@ -4,18 +4,26 @@ Transfere uma pasta entre dois computadores usando apenas som: o emissor toca os
 
 ## Como funciona
 
-1. `enviar.py` compacta a pasta em um ZIP (LZMA) em memória.
-2. O ZIP é fatiado em pacotes de 160 bytes. Cada pacote recebe cabeçalho (sessão, sequência, total, tamanho útil), CRC32 e 80 bytes de Reed-Solomon, somando 251 bytes.
-3. Cada byte vira dois nibbles de 4 bits. A cada símbolo de 16 ms (10 ms de análise e 6 ms de guarda contra eco) toca um de 16 tons, de 2600 a 4100 Hz. Um símbolo carrega meio byte. Os tons são múltiplos de 100 Hz, ortogonais na janela de 10 ms.
-4. Antes de cada pacote vai um chirp de 100 ms (800 → 3500 Hz) que o receptor usa para se sincronizar.
-5. `receber.py` filtra o áudio na faixa útil (600 a 4500 Hz), acha o chirp por correlação e demodula os tons com FFT. Antes de decidir cada tom, desconta um quarto do que o tom do símbolo anterior media, porque em sala reverberante ele ainda soa dentro da janela seguinte. O Reed-Solomon corrige até 40 bytes errados por pacote e o CRC descarta o que não deu para corrigir. Quando um pacote não abre, o receptor guarda as magnitudes dos tons; se outra cópia corrompida do mesmo pacote chegar (reconhecida por concordar em 10 % dos bytes), soma as duas antes de decidir de novo. Quando todos os pacotes chegam, extrai o ZIP na pasta de destino.
+```
+pasta ─► ZIP (LZMA) ─► pacotes de 160 B ─► + CRC32 + Reed-Solomon ─► tons de áudio ─► alto-falante
+                                                                                          │ ar
+pasta ◄─ ZIP ◄─ pacotes ◄─ corrige erros ◄─ decide o tom de cada símbolo ◄─ chirp ◄─ microfone
+```
 
-A sessão é o CRC do ZIP, então rodar o emissor de novo com a mesma pasta continua a mesma recepção. Se faltou algo, o receptor imprime quais pacotes faltam e o emissor reenvia só esses com `--pacotes`.
+### No emissor (`enviar.py`)
 
-Um pacote no ar:
+1. Compacta a pasta em um ZIP com LZMA, em memória.
+2. Fatia o ZIP em pedaços de 160 bytes. O máximo é 65 535 pacotes, uns 10 MB compactados.
+3. Monta cada pacote de 251 bytes: cabeçalho de 7 bytes (sessão, número do pacote, total, tamanho útil), os 160 bytes de dados, um CRC32 de 4 bytes e 80 bytes de Reed-Solomon.
+4. Transforma cada byte em dois nibbles de 4 bits. Cada nibble escolhe um de 16 tons, e cada tom dura 16 ms.
+5. Toca, na ordem: um chirp de sincronismo, um silêncio curto, os 502 símbolos e outro silêncio.
+
+A **sessão** é o CRC do ZIP. Rodar o emissor de novo com a mesma pasta gera a mesma sessão, e o receptor continua a mesma recepção em vez de recomeçar.
+
+### O sinal no ar
 
 ```
-[chirp 100 ms][silêncio 20 ms][502 símbolos × 16 ms][silêncio 40 ms]   = 8,19 s
+[chirp 100 ms][silêncio 20 ms][502 símbolos × 16 ms][silêncio 40 ms]   = 8,19 s por pacote
 ```
 
 | Campo                                        | Bytes |
@@ -25,6 +33,43 @@ Um pacote no ar:
 | CRC32                                        |     4 |
 | Reed-Solomon (corrige até 40 bytes)          |    80 |
 | Total                                        |   251 |
+
+- **Modulação MFSK de 16 tons.** Os tons vão de 2600 a 4100 Hz, de 100 em 100 Hz. Cada símbolo leva 4 bits.
+- **Janela de 10 ms mais guarda de 6 ms.** O receptor só analisa os últimos 10 ms de cada símbolo. Os 6 ms iniciais ficam de fora porque o eco do tom anterior ainda está soando neles.
+- **Ortogonalidade.** Em 10 ms cabe um número inteiro de ciclos de qualquer múltiplo de 100 Hz. Por isso a FFT separa os tons sem vazamento entre eles.
+- **Fase contínua.** O gerador troca de tom sem saltar de fase, então não há estalos que espalhem energia pelo espectro.
+- **Chirp de 100 ms, de 800 a 3500 Hz.** Ele varre uma faixa larga, então tem um pico de correlação bem definido. Isso dá o início do pacote com precisão de uma amostra.
+
+### No receptor (`receber.py` e `modem.py`)
+
+1. **Filtra.** Um passa-banda de 600 a 4500 Hz tira ruído e estalos fora da faixa dos tons. Sem ele, o chirp deixava de ser achado com ruído a −3 dB. Com ele, o sistema sobrevive a −12 dB.
+2. **Acha o chirp.** Correlaciona o áudio com o chirp conhecido, normalizada pela energia local, e aceita picos acima de 0,25. Se o pacote que vem depois não abrir, a busca volta para logo após o chirp. Assim, um falso positivo não engole um pacote de verdade que esteja logo adiante.
+3. **Mede os tons.** Para cada símbolo, uma FFT dos 10 ms finais dá a magnitude dos 16 tons.
+4. **Decide, descontando o eco.** Em sala reverberante, o tom do símbolo anterior ainda soa dentro da janela do atual e vence tons fracos. Antes de escolher o maior, o receptor desconta 25 % do que o tom anterior mediu no bin dele.
+5. **Corrige.** O Reed-Solomon conserta até 40 bytes errados em 251. O CRC32 recusa o que ainda saiu errado.
+6. **Soma cópias ruins.** Se o pacote não abre, o receptor guarda as magnitudes dos tons. Quando outra cópia corrompida do mesmo pacote chega (as duas concordam em pelo menos 10 % dos bytes, e pacotes diferentes concordam em 0,4 %), ele soma as magnitudes e decide de novo. Isso ajuda porque os erros caem em posições diferentes a cada cópia.
+7. **Monta.** Guarda cada pacote bom em disco, em `<destino>/.parcial.json`, e, com todos os pacotes, extrai o ZIP e apaga o arquivo parcial.
+
+### Reenvio do que faltou
+
+Depois de uns 13 s sem pacotes novos, o receptor imprime quais faltam, no formato que o emissor aceita:
+
+```
+Faltam 2 de 40 pacotes: 7,23
+Para completar, rode no emissor:  python enviar.py <pasta> --pacotes 7,23
+```
+
+Como o progresso fica em disco, tanto faz deixar o receptor aberto ou fechá-lo e abrir de novo com a mesma pasta.
+
+### Por que esses números
+
+O canal é um alto-falante de notebook e um microfone de notebook em uma sala comum. Medindo esse canal, o problema principal é o eco, e não o ruído: a energia refletida chega a superar a direta, e dura dezenas de milissegundos. O eco é mais longo nas frequências baixas.
+
+- Por isso os tons ficam em 2600 a 4100 Hz. Com um segundo banco em 1000 a 2500 Hz o dobro de dados cabia no ar, mas esse banco errava de 10 a 17 % dos símbolos, perto ou acima do que o Reed-Solomon corrige.
+- A guarda é de 6 ms porque, com 2 ms, o tom anterior ainda tinha 60 % da amplitude na janela seguinte. Acima de 6 ms não melhora, porque a cauda difusa passa a dominar.
+- O Reed-Solomon de 80 bytes corrige 16 % dos bytes, contra 4 % de erro medido nos tons atuais. A folga cobre variações da sala.
+
+Os detalhes e o que foi testado e descartado estão em "Decisoes", mais abaixo.
 
 ## Instalar
 
@@ -84,7 +129,7 @@ python enviar.py ./minha_pasta --wav tx.wav
 python receber.py ./recebidos --wav tx.wav
 ```
 
-`simular.py` aplica ruído branco, cliques, reverberação sintética e a resposta impulsiva medida de um canal real (`canais/pc_mac_30cm.wav`) ao áudio do modem e conta quantos pacotes chegam em cada cenário. É o teste de regressão para mudanças no `modem.py`: termina com erro se um cenário de referência ficar abaixo de 100 %.
+`simular.py` aplica ruído branco, cliques, reverberação sintética e as respostas impulsivas medidas de três canais reais (`canais/`) ao áudio do modem e conta quantos pacotes chegam em cada cenário. É o teste de regressão para mudanças no `modem.py`: termina com erro se um cenário de referência ficar abaixo de 100 %.
 
 ```bash
 python simular.py
@@ -124,6 +169,8 @@ A primeira versão usava um tom por vez (1000 a 2500 Hz), pacotes de 64 bytes, s
 > **Revisão (2026-10-10, segundo teste real):** com o modem acima, 21 pacotes exigiram várias rodadas: 10 a 15 % dos símbolos saíam errados, perto do limite de 40 bytes do Reed-Solomon, em ambiente silencioso e com sincronismo correto. Os erros caem em posições diferentes a cada cópia, então o receptor passou a somar as magnitudes das cópias corrompidas. Na gravação real isso fechou os pacotes 17 e 19 já na segunda cópia, uma volta antes. Na simulação, onde o eco é idêntico em toda volta, não há ganho. O erro é pior no banco de 1000 a 2500 Hz (12 %) que no de 2600 a 4100 Hz (3 %), possivelmente por reverberação mais longa nas frequências baixas; isso ainda não foi atacado.
 
 > **Revisão (2026-10-10, terceiro teste real):** quase todo pacote falhava. Os 3 canais medidos (`canais/`) foram reemulados e agora reproduzem o real: o modem de dois bancos entregava de 0 a 19 de 30 pacotes. Descartados: deriva de relógio (erro não cresce ao longo do pacote, alinhamento ótimo em 0 ms) e distorção (−21 dB fora dos tons). A causa é eco, pior nas frequências baixas: o banco de 1000 a 2500 Hz errava 10 a 17 % dos símbolos, o de 2600 a 4100 Hz errava 4 %. Voltei a um banco só, em 2600 a 4100 Hz, com o mesmo pacote de 160 B e Reed-Solomon de 80: erro de 4 % contra 16 % de limite, 30 de 30 nos canais medidos, e −12 dB de ruído, que antes não passava, também passa. Taxa de 38 para 19,5 B/s. Alternativas que passaram nos dois canais mas com menos folga: dois bancos com Reed-Solomon de 140 (23,9 B/s) e um banco com pacote de 192 (23,4 B/s). Guarda menor, janela de 20 ms e janela de 8 ms foram piores. Ainda não testado: tons acima de 4200 Hz, onde a resposta do canal não foi medida.
+
+> **Revisão (2026-10-10, quarto teste real):** com o formato atual, notebook Windows para MacBook a 30 cm, uma volta só: 21 de 21 pacotes, 0 descartados, pasta extraída idêntica. Antes disso, um primeiro envio não foi reconhecido porque o PC ainda estava no formato anterior. A pista foi o intervalo entre chirps na gravação, 4,2 s em vez de 8,2 s: emissor e receptor precisam estar no mesmo commit.
 
 ## Arquivos
 

@@ -73,7 +73,7 @@ Incompleto: faltam 2 de 40 pacotes.
 Para completar, rode no emissor:  python enviar.py <pasta> --pacotes 7,23
 ```
 
-Rode esse comando no emissor com o receptor ainda escutando (ou abra o receptor de novo: ele aceita a mesma sessão). O receptor também avisa, a cada volta do emissor, o que ainda falta.
+Não precisa nem do Ctrl+C: depois de uns 13 s sem pacotes o receptor imprime isso sozinho e segue escutando. O que já chegou fica guardado em `<destino>/.parcial.json`, então tanto faz deixar o receptor aberto ou fechá-lo e abrir de novo com a mesma pasta: ele retoma de onde parou. O arquivo é apagado quando a pasta é extraída.
 
 ### Testar sem alto-falante e microfone
 

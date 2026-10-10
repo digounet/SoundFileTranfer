@@ -6,12 +6,17 @@ Receptor: escuta o microfone (ou lê um WAV), remonta os pacotes e extrai a past
 
 Se a transmissão terminar incompleta, imprime quais pacotes faltam no formato que
 `enviar.py --pacotes` aceita. O emissor pode ser rodado de novo com a mesma pasta: a sessão
-é a mesma e o receptor só completa o que falta.
+é a mesma e o receptor só completa o que falta. O que já chegou fica em <destino>/.parcial.json,
+então o receptor pode ser fechado e aberto de novo que retoma de onde parou.
 """
 import argparse
+import base64
 import io
+import json
+import os
 import queue
 import sys
+import time
 import wave
 import zipfile
 
@@ -29,6 +34,29 @@ class Montador:
         self.ruins = 0
         self.ultimo_seq = -1
         self.concluido = False
+        self.ultimo_pacote_em = None
+        self.arquivo_parcial = os.path.join(destino, ".parcial.json")
+        self._carregar()
+
+    def _carregar(self):
+        """Retoma uma recepção interrompida na mesma pasta de destino."""
+        try:
+            with open(self.arquivo_parcial) as f:
+                p = json.load(f)
+        except (OSError, ValueError):
+            return
+        self.sessao, self.total = p["sessao"], p["total"]
+        self.partes = {int(k): base64.b64decode(v) for k, v in p["partes"].items()}
+        print(f"Retomando sessão {self.sessao:04x}: {len(self.partes)}/{self.total} pacotes "
+              f"já recebidos; faltam: {self.faltando()}")
+
+    def _salvar(self):
+        os.makedirs(self.destino, exist_ok=True)
+        tmp = self.arquivo_parcial + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"sessao": self.sessao, "total": self.total,
+                       "partes": {str(k): base64.b64encode(v).decode() for k, v in self.partes.items()}}, f)
+        os.replace(tmp, self.arquivo_parcial)        # troca atômica: Ctrl+C no meio não corrompe
 
     def ao_pacote(self, bruto):
         """Devolve True se o pacote decodificou; o sincronizador usa isso para saber onde seguir."""
@@ -48,6 +76,8 @@ class Montador:
             print(f"\nvolta terminou; faltam: {self.faltando()}")   # emissor voltou ao início
         self.ultimo_seq = seq
         self.partes[seq] = dados
+        self.ultimo_pacote_em = time.monotonic()
+        self._salvar()
         self._status()
         if len(self.partes) == self.total:
             self._finalizar()
@@ -83,6 +113,18 @@ class Montador:
         for n in nomes:
             print("  ", n)
         self.concluido = True
+        try:
+            os.remove(self.arquivo_parcial)
+        except OSError:
+            pass
+
+    def parado_ha(self):
+        """Segundos desde o último pacote bom, ou 0 se ainda não chegou nenhum."""
+        return time.monotonic() - self.ultimo_pacote_em if self.ultimo_pacote_em else 0.0
+
+    def pedir_faltantes(self):
+        print(f"\nFaltam {self.total - len(self.partes)} de {self.total} pacotes: {self.faltando()}")
+        print(f"Para completar, rode no emissor:  python enviar.py <pasta> --pacotes {self.faltando()}")
 
     def despedida(self):
         if self.concluido:
@@ -90,8 +132,9 @@ class Montador:
         if not self.total:
             print("\nNenhum pacote reconhecido.")
             return
-        print(f"\nIncompleto: faltam {self.total - len(self.partes)} de {self.total} pacotes.")
-        print(f"Para completar, rode no emissor:  python enviar.py <pasta> --pacotes {self.faltando()}")
+        self.pedir_faltantes()
+        print(f"O que já chegou está guardado em {self.arquivo_parcial}; "
+              f"abra o receptor de novo com a mesma pasta que ele continua de onde parou.")
 
 
 def ler_wav(caminho):
@@ -131,12 +174,21 @@ def main():
     def callback(indata, frames, tempo, status):
         fila.put(indata[:, 0].copy())
 
+    # Depois de uns 3 pacotes de silêncio, avisa o que falta sem esperar Ctrl+C, e segue escutando.
+    seg_pacote = (modem.PREAMBULO + modem.SILENCIO_POS_PREAMBULO
+                  + modem.SLOTS_PACOTE * modem.SIMBOLO + modem.SILENCIO_ENTRE_PACOTES)
+    avisado = False
     print("Escutando... (Ctrl+C para sair)")
     with sd.InputStream(samplerate=args.sr, channels=1, dtype="float32",
                         blocksize=4096, callback=callback):
         try:
             while not montador.concluido:
                 sync.alimentar(fila.get())
+                parado = montador.parado_ha() > 3 * seg_pacote
+                if parado and not avisado and montador.total:
+                    montador.pedir_faltantes()
+                    print("(continuo escutando)")
+                avisado = parado
         except KeyboardInterrupt:
             print("\nInterrompido.")
             montador.despedida()

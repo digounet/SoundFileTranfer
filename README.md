@@ -5,25 +5,25 @@ Transfere uma pasta entre dois computadores usando apenas som: o emissor toca os
 ## Como funciona
 
 1. `enviar.py` compacta a pasta em um ZIP (LZMA) em memória.
-2. O ZIP é fatiado em pacotes de 192 bytes. Cada pacote recebe cabeçalho (sessão, sequência, total, tamanho útil), CRC32 e 48 bytes de Reed-Solomon, somando 251 bytes.
-3. Cada byte vira dois nibbles de 4 bits. A cada símbolo de 12 ms (10 ms de análise e 2 ms de guarda contra eco) tocam dois tons ao mesmo tempo, um de cada banco de 16 tons: o banco 1 ocupa 1000 a 2500 Hz, o banco 2 ocupa 2600 a 4100 Hz. Um símbolo carrega um byte. Os tons são múltiplos de 100 Hz, ortogonais na janela de 10 ms.
+2. O ZIP é fatiado em pacotes de 160 bytes. Cada pacote recebe cabeçalho (sessão, sequência, total, tamanho útil), CRC32 e 80 bytes de Reed-Solomon, somando 251 bytes.
+3. Cada byte vira dois nibbles de 4 bits. A cada símbolo de 16 ms (10 ms de análise e 6 ms de guarda contra eco) tocam dois tons ao mesmo tempo, um de cada banco de 16 tons: o banco 1 ocupa 1000 a 2500 Hz, o banco 2 ocupa 2600 a 4100 Hz. Um símbolo carrega um byte. Os tons são múltiplos de 100 Hz, ortogonais na janela de 10 ms.
 4. Antes de cada pacote vai um chirp de 100 ms (800 → 3500 Hz) que o receptor usa para se sincronizar.
-5. `receber.py` filtra o áudio na faixa útil (600 a 4500 Hz), acha o chirp por correlação, demodula os tons com FFT, corrige até 24 bytes errados por pacote com Reed-Solomon e descarta pelo CRC o que não deu para corrigir. Quando todos os pacotes chegam, extrai o ZIP na pasta de destino.
+5. `receber.py` filtra o áudio na faixa útil (600 a 4500 Hz), acha o chirp por correlação e demodula os tons com FFT. Antes de decidir cada tom, desconta um quarto do que o tom do símbolo anterior media, porque em sala reverberante ele ainda soa dentro da janela seguinte. O Reed-Solomon corrige até 40 bytes errados por pacote e o CRC descarta o que não deu para corrigir. Quando todos os pacotes chegam, extrai o ZIP na pasta de destino.
 
 A sessão é o CRC do ZIP, então rodar o emissor de novo com a mesma pasta continua a mesma recepção. Se faltou algo, o receptor imprime quais pacotes faltam e o emissor reenvia só esses com `--pacotes`.
 
 Um pacote no ar:
 
 ```
-[chirp 100 ms][silêncio 20 ms][251 símbolos × 12 ms][silêncio 40 ms]   = 3,17 s
+[chirp 100 ms][silêncio 20 ms][251 símbolos × 16 ms][silêncio 40 ms]   = 4,18 s
 ```
 
 | Campo                                        | Bytes |
 |----------------------------------------------|------:|
 | Cabeçalho (sessão, seq, total, tamanho útil) |     7 |
-| Payload                                      |   192 |
+| Payload                                      |   160 |
 | CRC32                                        |     4 |
-| Reed-Solomon (corrige até 24 bytes)          |    48 |
+| Reed-Solomon (corrige até 40 bytes)          |    80 |
 | Total                                        |   251 |
 
 ## Instalar
@@ -84,7 +84,7 @@ python enviar.py ./minha_pasta --wav tx.wav
 python receber.py ./recebidos --wav tx.wav
 ```
 
-`simular.py` aplica ruído branco, cliques e reverberação ao áudio do modem e conta quantos pacotes chegam em cada cenário. É o teste de regressão para mudanças no `modem.py`: termina com erro se um cenário de referência ficar abaixo de 100 %.
+`simular.py` aplica ruído branco, cliques, reverberação sintética e a resposta impulsiva medida de um canal real (`canais/pc_mac_30cm.wav`) ao áudio do modem e conta quantos pacotes chegam em cada cenário. É o teste de regressão para mudanças no `modem.py`: termina com erro se um cenário de referência ficar abaixo de 100 %.
 
 ```bash
 python simular.py
@@ -92,8 +92,8 @@ python simular.py
 
 ## Dicas
 
-- Deixe os dispositivos a menos de 1 m um do outro, com volume médio-alto, sem distorcer.
-- Reverberação (sala vazia, azulejo) e distância atrapalham mais que ruído de fundo contínuo.
+- Aponte o alto-falante do emissor para o microfone do receptor, a uns 10 a 30 cm. Alto-falante de notebook costuma ficar embaixo ou atrás: aí o som chega ao outro lado por reflexão na mesa, e o eco de cada tom invade o tom seguinte. Foi o que o primeiro teste real mediu: a 30 cm, a energia refletida superava a direta.
+- Volume médio-alto, sem distorcer. Reverberação (sala vazia, azulejo) atrapalha mais que ruído de fundo contínuo.
 - Não precisa `--repetir 2` por padrão: é mais barato mandar uma vez e reenviar só o que faltou.
 - Se a pasta mudou entre um envio e outro, a sessão muda e o receptor recomeça do zero. É o esperado: o conteúdo é outro.
 
@@ -101,10 +101,10 @@ python simular.py
 
 | Medida            | Valor                                         |
 |-------------------|-----------------------------------------------|
-| Taxa útil         | ~60 B/s (192 bytes a cada 3,17 s)             |
-| 1 KB compactado   | ~17 s                                         |
-| 100 KB compactado | ~28 min                                       |
-| Tamanho máximo    | 65 535 pacotes, ~12 MB compactados            |
+| Taxa útil         | ~38 B/s (160 bytes a cada 4,18 s)             |
+| 1 KB compactado   | ~27 s                                         |
+| 100 KB compactado | ~45 min                                       |
+| Tamanho máximo    | 65 535 pacotes, ~10 MB compactados            |
 | Faixa de áudio    | 800 a 4100 Hz, dentro do alcance de qualquer alto-falante e microfone de notebook |
 
 ## Decisoes
@@ -119,9 +119,12 @@ A primeira versão usava um tom por vez (1000 a 2500 Hz), pacotes de 64 bytes, s
 >
 > Descartado: decodificação com apagamentos (sem ganho em nenhum cenário). Quatro bancos ou janela de 5 ms chegam a 80 a 88 B/s na simulação, mas usam até 7300 Hz e tons simultâneos demais para alto-falante barato; só com teste real.
 
+> **Revisão (2026-10-10, após o primeiro teste real):** notebook Windows a 70 % de volume, 30 cm de um MacBook, sala de escritório: chegaram 1 a 3 pacotes de 17. A gravação mostrou SNR de 25 dB e sincronismo correto; o problema era eco. A resposta impulsiva medida tem a energia refletida acima da direta, e com 2 ms de guarda o tom anterior ainda tinha 60 % da amplitude na janela seguinte, vencendo os tons que o alto-falante reproduz fraco (até −16 dB em 3400 Hz). Correções, escolhidas emulando esse canal na simulação: guarda de 2 para 6 ms, Reed-Solomon de 48 para 80 bytes (payload 160) e desconto de 25 % do rastro do tom anterior antes de decidir. Taxa de 60 para 38 B/s; no canal medido, de 4 de 32 pacotes para 100 %, e 97 % com a reverberação 3 e 6 dB pior. Testado e descartado: equalização por tom, estimada das decisões ou do chirp, piorou em todos os casos; guarda acima de 6 ms não ajuda, porque a cauda difusa domina; Reed-Solomon de 64 bytes (42 B/s) perde margem nos canais piores.
+
 ## Arquivos
 
 - `modem.py`: modulação, demodulação, pacotes e sincronismo. Compartilhado pelos dois lados.
 - `enviar.py`: emissor (alto-falante ou WAV).
 - `receber.py`: receptor (microfone ou WAV).
 - `simular.py`: canal simulado para teste de regressão do modem.
+- `canais/`: respostas impulsivas medidas em canais reais, usadas pela simulação.

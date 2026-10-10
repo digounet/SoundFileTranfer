@@ -59,10 +59,10 @@ def reverb(audio, rt60, drr_db, semente):
     return fftconvolve(audio, ir)[:len(audio)].astype(np.float32)
 
 
-def canal_real(audio, cauda_db, semente, snr_banda=25.0):
+def canal_real(audio, cauda_db, semente, snr_banda=25.0, arquivo="pc_mac_30cm.wav"):
     """Convolui com a resposta impulsiva medida; cauda_db > 0 piora a reverberação alem do medido.
     O ruido branco e dosado pela SNR dentro da faixa util, como medida na gravacao (25 dB)."""
-    caminho = os.path.join(os.path.dirname(os.path.abspath(__file__)), "canais", "pc_mac_30cm.wav")
+    caminho = os.path.join(os.path.dirname(os.path.abspath(__file__)), "canais", arquivo)
     with wave.open(caminho) as w:
         h = np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float64)
     h[int(0.002 * SR):] *= 10 ** (cauda_db / 20)
@@ -105,6 +105,8 @@ CENARIOS = [
     ("reverb DRR 5 dB",    lambda a: ruido(reverb(a, 0.4, 5, 18), 10, 19),   True),
     ("reverb DRR 2 dB",    lambda a: ruido(reverb(a, 0.4, 2, 20), 10, 21),   False),
     ("canal real 30 cm",    lambda a: canal_real(a, 0, 22),                   True),
+    ("canal real b",        lambda a: canal_real(a, 0, 27, arquivo="pc_mac_30cm_b.wav"), True),
+    ("canal real c",        lambda a: canal_real(a, 0, 28, arquivo="pc_mac_30cm_c.wav"), True),
     ("canal real +3 dB rev", lambda a: canal_real(a, 3, 23),                  False),
     ("canal real +6 dB rev", lambda a: canal_real(a, 6, 24),                  False),
     # Informativo. Aqui o eco e identico em toda volta, entao os mesmos pacotes falham de novo

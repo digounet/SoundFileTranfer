@@ -2,12 +2,13 @@
 Modem acústico MFSK compartilhado entre emissor (enviar.py) e receptor (receber.py).
 
 Formato de cada pacote no ar:
-    [chirp de sincronismo 100 ms][silêncio 20 ms][251 símbolos MFSK][silêncio 40 ms]
+    [chirp de sincronismo 100 ms][silêncio 20 ms][502 símbolos MFSK][silêncio 40 ms]
 
-Cada símbolo dura 16 ms (6 ms de guarda contra eco + 10 ms de análise) e carrega 2 bancos de
-16 tons tocando ao mesmo tempo: cada banco escolhe 1 de 16 tons (4 bits), logo 8 bits por
-símbolo. Os tons são múltiplos de 100 Hz (1000 a 4100 Hz), ortogonais na janela de 10 ms.
-A potência total é a mesma de um tom só; cada banco fica 3 dB abaixo.
+Cada símbolo dura 16 ms (6 ms de guarda contra eco + 10 ms de análise) e é 1 de 16 tons (4 bits).
+Os tons são múltiplos de 100 Hz (2600 a 4100 Hz), ortogonais na janela de 10 ms.
+N_BANCOS permite tocar vários bancos de 16 tons ao mesmo tempo (dobra a taxa), mas com 2 bancos
+o de 1000 a 2500 Hz errava 10 a 15 % dos símbolos nos testes reais: a reverberação é mais longa
+nas frequências baixas. Medido nas respostas de canais/: 1 banco em 2600 a 4100 Hz erra ~4 %.
 
 Dados do pacote (251 bytes):
     cabeçalho (sessão, seq, total, tamanho) 7 B + payload 160 B + CRC32 4 B + Reed-Solomon 80 B
@@ -31,8 +32,8 @@ from reedsolo import RSCodec, ReedSolomonError
 SR_PADRAO = 48000
 
 N_TONS = 16                 # 16 tons -> 4 bits por banco
-N_BANCOS = 2                # bancos tocando em paralelo; cada um leva um nibble por símbolo
-F_BASE = 1000.0             # Hz
+N_BANCOS = 1                # bancos tocando em paralelo; cada um leva um nibble por símbolo
+F_BASE = 2600.0             # Hz
 F_PASSO = 100.0             # Hz (= 1 / JANELA -> ortogonalidade)
 JANELA = 0.010              # s, janela de análise
 GUARDA = 0.006              # s, descartado na recepção (eco/reverberação); ver docstring

@@ -6,7 +6,7 @@ Transfere uma pasta entre dois computadores usando apenas som: o emissor toca os
 
 1. `enviar.py` compacta a pasta em um ZIP (LZMA) em memória.
 2. O ZIP é fatiado em pacotes de 160 bytes. Cada pacote recebe cabeçalho (sessão, sequência, total, tamanho útil), CRC32 e 80 bytes de Reed-Solomon, somando 251 bytes.
-3. Cada byte vira dois nibbles de 4 bits. A cada símbolo de 16 ms (10 ms de análise e 6 ms de guarda contra eco) tocam dois tons ao mesmo tempo, um de cada banco de 16 tons: o banco 1 ocupa 1000 a 2500 Hz, o banco 2 ocupa 2600 a 4100 Hz. Um símbolo carrega um byte. Os tons são múltiplos de 100 Hz, ortogonais na janela de 10 ms.
+3. Cada byte vira dois nibbles de 4 bits. A cada símbolo de 16 ms (10 ms de análise e 6 ms de guarda contra eco) toca um de 16 tons, de 2600 a 4100 Hz. Um símbolo carrega meio byte. Os tons são múltiplos de 100 Hz, ortogonais na janela de 10 ms.
 4. Antes de cada pacote vai um chirp de 100 ms (800 → 3500 Hz) que o receptor usa para se sincronizar.
 5. `receber.py` filtra o áudio na faixa útil (600 a 4500 Hz), acha o chirp por correlação e demodula os tons com FFT. Antes de decidir cada tom, desconta um quarto do que o tom do símbolo anterior media, porque em sala reverberante ele ainda soa dentro da janela seguinte. O Reed-Solomon corrige até 40 bytes errados por pacote e o CRC descarta o que não deu para corrigir. Quando um pacote não abre, o receptor guarda as magnitudes dos tons; se outra cópia corrompida do mesmo pacote chegar (reconhecida por concordar em 10 % dos bytes), soma as duas antes de decidir de novo. Quando todos os pacotes chegam, extrai o ZIP na pasta de destino.
 
@@ -15,7 +15,7 @@ A sessão é o CRC do ZIP, então rodar o emissor de novo com a mesma pasta cont
 Um pacote no ar:
 
 ```
-[chirp 100 ms][silêncio 20 ms][251 símbolos × 16 ms][silêncio 40 ms]   = 4,18 s
+[chirp 100 ms][silêncio 20 ms][502 símbolos × 16 ms][silêncio 40 ms]   = 8,19 s
 ```
 
 | Campo                                        | Bytes |
@@ -101,11 +101,11 @@ python simular.py
 
 | Medida            | Valor                                         |
 |-------------------|-----------------------------------------------|
-| Taxa útil         | ~38 B/s (160 bytes a cada 4,18 s)             |
-| 1 KB compactado   | ~27 s                                         |
-| 100 KB compactado | ~45 min                                       |
+| Taxa útil         | ~19,5 B/s (160 bytes a cada 8,19 s)           |
+| 1 KB compactado   | ~52 s                                         |
+| 100 KB compactado | ~1,4 h                                        |
 | Tamanho máximo    | 65 535 pacotes, ~10 MB compactados            |
-| Faixa de áudio    | 800 a 4100 Hz, dentro do alcance de qualquer alto-falante e microfone de notebook |
+| Faixa de áudio    | 800 a 4100 Hz (tons em 2600 a 4100 Hz), dentro do alcance de qualquer alto-falante e microfone de notebook |
 
 ## Decisoes
 
@@ -122,6 +122,8 @@ A primeira versão usava um tom por vez (1000 a 2500 Hz), pacotes de 64 bytes, s
 > **Revisão (2026-10-10, após o primeiro teste real):** notebook Windows a 70 % de volume, 30 cm de um MacBook, sala de escritório: chegaram 1 a 3 pacotes de 17. A gravação mostrou SNR de 25 dB e sincronismo correto; o problema era eco. A resposta impulsiva medida tem a energia refletida acima da direta, e com 2 ms de guarda o tom anterior ainda tinha 60 % da amplitude na janela seguinte, vencendo os tons que o alto-falante reproduz fraco (até −16 dB em 3400 Hz). Correções, escolhidas emulando esse canal na simulação: guarda de 2 para 6 ms, Reed-Solomon de 48 para 80 bytes (payload 160) e desconto de 25 % do rastro do tom anterior antes de decidir. Taxa de 60 para 38 B/s; no canal medido, de 4 de 32 pacotes para 100 %, e 97 % com a reverberação 3 e 6 dB pior. Testado e descartado: equalização por tom, estimada das decisões ou do chirp, piorou em todos os casos; guarda acima de 6 ms não ajuda, porque a cauda difusa domina; Reed-Solomon de 64 bytes (42 B/s) perde margem nos canais piores.
 
 > **Revisão (2026-10-10, segundo teste real):** com o modem acima, 21 pacotes exigiram várias rodadas: 10 a 15 % dos símbolos saíam errados, perto do limite de 40 bytes do Reed-Solomon, em ambiente silencioso e com sincronismo correto. Os erros caem em posições diferentes a cada cópia, então o receptor passou a somar as magnitudes das cópias corrompidas. Na gravação real isso fechou os pacotes 17 e 19 já na segunda cópia, uma volta antes. Na simulação, onde o eco é idêntico em toda volta, não há ganho. O erro é pior no banco de 1000 a 2500 Hz (12 %) que no de 2600 a 4100 Hz (3 %), possivelmente por reverberação mais longa nas frequências baixas; isso ainda não foi atacado.
+
+> **Revisão (2026-10-10, terceiro teste real):** quase todo pacote falhava. Os 3 canais medidos (`canais/`) foram reemulados e agora reproduzem o real: o modem de dois bancos entregava de 0 a 19 de 30 pacotes. Descartados: deriva de relógio (erro não cresce ao longo do pacote, alinhamento ótimo em 0 ms) e distorção (−21 dB fora dos tons). A causa é eco, pior nas frequências baixas: o banco de 1000 a 2500 Hz errava 10 a 17 % dos símbolos, o de 2600 a 4100 Hz errava 4 %. Voltei a um banco só, em 2600 a 4100 Hz, com o mesmo pacote de 160 B e Reed-Solomon de 80: erro de 4 % contra 16 % de limite, 30 de 30 nos canais medidos, e −12 dB de ruído, que antes não passava, também passa. Taxa de 38 para 19,5 B/s. Alternativas que passaram nos dois canais mas com menos folga: dois bancos com Reed-Solomon de 140 (23,9 B/s) e um banco com pacote de 192 (23,4 B/s). Guarda menor, janela de 20 ms e janela de 8 ms foram piores. Ainda não testado: tons acima de 4200 Hz, onde a resposta do canal não foi medida.
 
 ## Arquivos
 

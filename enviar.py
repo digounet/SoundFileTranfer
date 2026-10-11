@@ -8,10 +8,11 @@ Emissor: compacta uma pasta e transmite pelo alto-falante (ou grava em WAV).
 """
 import argparse
 import io
+import lzma
 import os
 import sys
+import tarfile
 import wave
-import zipfile
 import zlib
 
 import numpy as np
@@ -19,13 +20,28 @@ import numpy as np
 import modem
 
 
+IGNORAR = {".DS_Store", "bin", "obj", ".git"}
+
+
+def _anonimo(info):
+    # dono e data fora do arquivo: a mesma pasta gera os mesmos bytes e, portanto, a mesma sessao
+    info.uid = info.gid = 0
+    info.uname = info.gname = ""
+    info.mtime = 0
+    return info
+
+
 def compactar(pasta):
+    # tar + xz em um fluxo so: o xz enxerga a repeticao entre arquivos, o ZIP comprime cada um isolado
     mem = io.BytesIO()
-    with zipfile.ZipFile(mem, "w", compression=zipfile.ZIP_LZMA) as z:
-        for raiz, _, arquivos in os.walk(pasta):
-            for nome in arquivos:
+    with tarfile.open(fileobj=mem, mode="w:xz", preset=9 | lzma.PRESET_EXTREME) as t:
+        for raiz, dirs, arquivos in os.walk(pasta):
+            dirs[:] = sorted(d for d in dirs if d not in IGNORAR)
+            for nome in sorted(arquivos):
+                if nome in IGNORAR:
+                    continue
                 caminho = os.path.join(raiz, nome)
-                z.write(caminho, os.path.relpath(caminho, pasta))
+                t.add(caminho, os.path.relpath(caminho, pasta), filter=_anonimo)
     return mem.getvalue()
 
 

@@ -5,20 +5,20 @@ Transfere uma pasta entre dois computadores usando apenas som: o emissor toca os
 ## Como funciona
 
 ```
-pasta ─► ZIP (LZMA) ─► pacotes de 160 B ─► + CRC32 + Reed-Solomon ─► tons de áudio ─► alto-falante
+pasta ─► tar.xz ─► pacotes de 160 B ─► + CRC32 + Reed-Solomon ─► tons de áudio ─► alto-falante
                                                                                           │ ar
-pasta ◄─ ZIP ◄─ pacotes ◄─ corrige erros ◄─ decide o tom de cada símbolo ◄─ chirp ◄─ microfone
+pasta ◄─ tar.xz ◄─ pacotes ◄─ corrige erros ◄─ decide o tom de cada símbolo ◄─ chirp ◄─ microfone
 ```
 
 ### No emissor (`enviar.py`)
 
-1. Compacta a pasta em um ZIP com LZMA, em memória.
-2. Fatia o ZIP em pedaços de 160 bytes. O máximo é 65 535 pacotes, uns 10 MB compactados.
+1. Compacta a pasta em um único tar.xz, em memória, sem `.DS_Store`, `bin/`, `obj/` e `.git/`. Um fluxo só deixa o xz aproveitar a repetição entre arquivos.
+2. Fatia o arquivo em pedaços de 160 bytes. O máximo é 65 535 pacotes, uns 10 MB compactados.
 3. Monta cada pacote de 251 bytes: cabeçalho de 7 bytes (sessão, número do pacote, total, tamanho útil), os 160 bytes de dados, um CRC32 de 4 bytes e 80 bytes de Reed-Solomon.
 4. Transforma cada byte em dois nibbles de 4 bits. Cada nibble escolhe um de 16 tons, e cada tom dura 16 ms.
 5. Toca, na ordem: um chirp de sincronismo, um silêncio curto, os 502 símbolos e outro silêncio.
 
-A **sessão** é o CRC do ZIP. Rodar o emissor de novo com a mesma pasta gera a mesma sessão, e o receptor continua a mesma recepção em vez de recomeçar.
+A **sessão** é o CRC do tar.xz. Rodar o emissor de novo com a mesma pasta gera a mesma sessão, e o receptor continua a mesma recepção em vez de recomeçar.
 
 ### O sinal no ar
 
@@ -48,7 +48,7 @@ A **sessão** é o CRC do ZIP. Rodar o emissor de novo com a mesma pasta gera a 
 4. **Decide, descontando o eco.** Em sala reverberante, o tom do símbolo anterior ainda soa dentro da janela do atual e vence tons fracos. Antes de escolher o maior, o receptor desconta 25 % do que o tom anterior mediu no bin dele.
 5. **Corrige.** O Reed-Solomon conserta até 40 bytes errados em 251. O CRC32 recusa o que ainda saiu errado.
 6. **Soma cópias ruins.** Se o pacote não abre, o receptor guarda as magnitudes dos tons. Quando outra cópia corrompida do mesmo pacote chega (as duas concordam em pelo menos 10 % dos bytes, e pacotes diferentes concordam em 0,4 %), ele soma as magnitudes e decide de novo. Isso ajuda porque os erros caem em posições diferentes a cada cópia.
-7. **Monta.** Guarda cada pacote bom em disco, em `<destino>/.parcial.json`, e, com todos os pacotes, extrai o ZIP e apaga o arquivo parcial.
+7. **Monta.** Guarda cada pacote bom em disco, em `<destino>/.parcial.json`, e, com todos os pacotes, extrai o tar.xz e apaga o arquivo parcial.
 
 ### Reenvio do que faltou
 

@@ -17,8 +17,8 @@ import os
 import queue
 import sys
 import time
+import tarfile
 import wave
-import zipfile
 
 import numpy as np
 
@@ -105,13 +105,14 @@ class Montador:
 
     def _finalizar(self):
         dados = b"".join(self.partes[i] for i in range(self.total))
-        with zipfile.ZipFile(io.BytesIO(dados)) as z:
-            ruim = z.testzip()
-            if ruim:
-                print(f"\nCRC falhou em {ruim}")
-                return
-            z.extractall(self.destino)
-            nomes = z.namelist()
+        try:
+            # o xz leva um CRC de integridade; se algum pacote passou errado, a leitura falha aqui
+            with tarfile.open(fileobj=io.BytesIO(dados), mode="r:xz") as t:
+                t.extractall(self.destino, filter="data")
+                nomes = [m.name for m in t.getmembers() if m.isfile()]
+        except (tarfile.TarError, EOFError, OSError) as e:
+            print(f"\nArquivo recebido está corrompido: {e}")
+            return
         print(f"\nRecebidos {len(nomes)} arquivo(s) em {self.destino}:")
         for n in nomes:
             print("  ", n)
